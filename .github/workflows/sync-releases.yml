@@ -18,6 +18,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT }}
+
+      - name: Auth gh CLI
+        run: echo "${{ secrets.PAT }}" | gh auth login --with-token
 
       - name: Get latest upstream release
         id: upstream
