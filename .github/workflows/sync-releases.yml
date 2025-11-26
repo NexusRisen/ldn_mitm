@@ -1,0 +1,97 @@
+name: Sync Releases
+
+on:
+  schedule:
+    # Check every 5 minutes (minimum allowed by GitHub)
+    - cron: '*/5 * * * *'
+  repository_dispatch:
+    # Instant trigger via external service
+    types: [sync-releases]
+  workflow_dispatch:
+
+jobs:
+  sync-releases:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get latest upstream release
+        id: upstream
+        run: |
+          RELEASE_DATA=$(curl -s https://api.github.com/repos/spacemeowx2/ldn_mitm/releases/latest)
+          TAG=$(echo "$RELEASE_DATA" | jq -r '.tag_name')
+          NAME=$(echo "$RELEASE_DATA" | jq -r '.name')
+          BODY=$(echo "$RELEASE_DATA" | jq -r '.body')
+          PRERELEASE=$(echo "$RELEASE_DATA" | jq -r '.prerelease')
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
+
+          # Save body to file to handle multiline
+          echo "$BODY" > /tmp/release_body.txt
+
+          echo "Latest upstream release: $TAG"
+
+      - name: Check if release exists locally
+        id: check
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+
+          # Check if tag already exists in this repo
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG")
+
+          if [ "$RESPONSE" = "200" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release $TAG already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Release $TAG does not exist, will sync"
+          fi
+
+      - name: Download upstream release assets
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+          mkdir -p /tmp/assets
+
+          # Get asset download URLs
+          ASSETS=$(curl -s "https://api.github.com/repos/spacemeowx2/ldn_mitm/releases/tags/$TAG" | jq -r '.assets[] | "\(.name)|\(.browser_download_url)"')
+
+          while IFS='|' read -r name url; do
+            if [ -n "$url" ] && [ "$url" != "null" ]; then
+              echo "Downloading: $name"
+              curl -L -o "/tmp/assets/$name" "$url"
+            fi
+          done <<< "$ASSETS"
+
+          ls -la /tmp/assets/
+
+      - name: Create release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.upstream.outputs.tag }}"
+          NAME="${{ steps.upstream.outputs.name }}"
+          PRERELEASE="${{ steps.upstream.outputs.prerelease }}"
+
+          # Create the release
+          PRERELEASE_FLAG=""
+          if [ "$PRERELEASE" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          gh release create "$TAG" \
+            --title "$NAME" \
+            --notes-file /tmp/release_body.txt \
+            $PRERELEASE_FLAG \
+            /tmp/assets/* || echo "No assets to upload"
+
+          echo "Created release: $TAG"

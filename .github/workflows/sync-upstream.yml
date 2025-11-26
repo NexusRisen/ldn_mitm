@@ -1,0 +1,69 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # Fallback: Run every 5 minutes (minimum allowed by GitHub)
+    - cron: '*/5 * * * *'
+  repository_dispatch:
+    # Instant trigger via external service or API call
+    # curl -X POST -H "Authorization: token YOUR_PAT" \
+    #   -H "Accept: application/vnd.github.v3+json" \
+    #   https://api.github.com/repos/NexusRisen/ldn_mitm/dispatches \
+    #   -d '{"event_type":"sync-upstream"}'
+    types: [sync-upstream]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/spacemeowx2/ldn_mitm.git || true
+          git fetch upstream
+
+      - name: Check for new commits
+        id: check
+        run: |
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/master)
+          if [ "$LOCAL" != "$UPSTREAM" ]; then
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "New commits detected from upstream"
+          else
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+            echo "Already up to date"
+          fi
+
+      - name: Merge upstream changes
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git merge upstream/master --no-edit --allow-unrelated-histories || {
+            echo "Merge conflict detected, attempting rebase..."
+            git merge --abort
+            git rebase upstream/master
+          }
+
+      - name: Update submodules
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git submodule update --init --recursive
+
+      - name: Push changes
+        if: steps.check.outputs.has_updates == 'true'
+        run: |
+          git push origin master
