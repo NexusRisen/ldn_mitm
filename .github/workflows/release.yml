@@ -4,6 +4,7 @@ on:
   push:
     tags:
     - 'v*'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -18,20 +19,26 @@ jobs:
 
     steps:
     - name: Set env
-      run: echo "RELEASE_VERSION=${GITHUB_REF:10}" >> $GITHUB_ENV
+      run: |
+        if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          echo "RELEASE_VERSION=${GITHUB_REF:10}" >> $GITHUB_ENV
+        else
+          echo "RELEASE_VERSION=nightly" >> $GITHUB_ENV
+        fi
 
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v4
       with:
         submodules: true
 
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2
-    
+
     - name: Build
       id: build
-      run: make -j8 PREFIX="ccache aarch64-none-elf-"
+      run: |
+        make -j$(nproc) PREFIX="ccache aarch64-none-elf-"
       continue-on-error: true
-    
+
     - name: Install libnx master & Retry build
       id: retry
       if: ${{ steps.build.outcome == 'failure' }}
@@ -39,34 +46,30 @@ jobs:
         pushd /tmp
         git clone https://github.com/switchbrew/libnx
         cd libnx
-        make -j8 PREFIX="ccache aarch64-none-elf-"
+        make -j$(nproc) PREFIX="ccache aarch64-none-elf-"
         make install
         popd
-        make -j8 PREFIX="ccache aarch64-none-elf-"
+        make -j$(nproc) PREFIX="ccache aarch64-none-elf-"
 
     - name: Pack
       run: |
         cd ./out/sd
-        sudo zip -r ./ldn_mitm_${{ env.RELEASE_VERSION }}.zip atmosphere switch
-    
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1.1.4
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        zip -r ../../ldn_mitm_${{ env.RELEASE_VERSION }}.zip atmosphere switch
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
       with:
-        tag_name: ${{ github.ref }}
-        release_name: ${{ env.RELEASE_VERSION }}
+        files: ldn_mitm_${{ env.RELEASE_VERSION }}.zip
+        name: ${{ env.RELEASE_VERSION }}
         draft: false
         prerelease: false
-    
-    - name: Upload Release Asset
-      id: upload-release-asset
-      uses: actions/upload-release-asset@v1.0.2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload Artifact (on workflow_dispatch)
+      if: github.event_name == 'workflow_dispatch'
+      uses: actions/upload-artifact@v4
       with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./out/sd/ldn_mitm_${{ env.RELEASE_VERSION }}.zip
-        asset_name: ldn_mitm_${{ env.RELEASE_VERSION }}.zip
-        asset_content_type: application/zip
+        name: ldn_mitm_${{ env.RELEASE_VERSION }}
+        path: ldn_mitm_${{ env.RELEASE_VERSION }}.zip
